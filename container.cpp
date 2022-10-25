@@ -4,16 +4,21 @@
 #include <sys/stat.h>
 #include <fstream>
 
-#define CGROUP_FOLDER "/sys/fs/cgroup/container/"
-
 using std::cout;
 using std::fstream;
 using std::ios;
 using std::string;
 
 const int SIZE = 100000;
-const std::string cgroupPath = "/sys/fs/cgroup/container/";
+const std::string CGROUP_PATH = "/sys/fs/cgroup/container/";
+const int FLAGS = CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWIPC | CLONE_NEWNET;
 
+/**
+ * Return a stack that points to the end
+ *
+ * @param capacity Size to allocate to the stack - in bytes
+ * @return the stack
+ */
 char* build_stack(int capacity){
     char* stack = new (std::nothrow) char[capacity];
 
@@ -24,34 +29,59 @@ char* build_stack(int capacity){
     return stack + capacity;
 }
 
-void write(string path, string str){
+/**
+ * Append to a file.
+ *
+ * @param path path of file
+ * @param str the string to be appended 
+ */
+void append(string path, string str){
     fstream file;
     file.open(path, ios::app);
     file << str << "\n";
     file.close();
 }
 
+/**
+ * Constructs a cgroup for the container 
+ * and applies limitations to the container
+ */
 void construct_cgroup(){  
-    mkdir(CGROUP_FOLDER, S_IRUSR | S_IWUSR);
+    mkdir(CGROUP_PATH.c_str(), S_IRUSR | S_IWUSR);
 
-    const char* pid  = std::to_string(getpid()).c_str();
-    write(cgroupPath + "cgroup.procs", pid);
-    write(cgroupPath + "notify_on_release", "1");
-    write(cgroupPath + "pids.max", "3");
-    write(cgroupPath + "memory.limit_in_bytes", std::to_string(40 * 1024 * 1024));
+    string pid  = std::to_string(getpid());
+    append(CGROUP_PATH + "cgroup.procs", pid);
+    append(CGROUP_PATH + "notify_on_release", "1");
+    append(CGROUP_PATH + "pids.max", "3");
+    append(CGROUP_PATH + "memory.limit_in_bytes", std::to_string(40 * 1024 * 1024));
 }
 
+/**
+ * Sets the new root of the container 
+ * and sets the working directory of the container to the new root
+ * 
+ * @param folder the path of the new root
+ */
 void set_root(const char* folder){
     chroot(folder);
     chdir("/");
 }
 
+/**
+ * Clears the enviromental variables that is passed by the parent process
+ * and sets some basic enviromental varibles for the shell
+ */
 void set_env(){
     clearenv();
     setenv("TERM", "xterm-256color", 0);
     setenv("PATH", "/bin/:/sbin/:usr/bin:/usr/sbin", 0);
 }
 
+/**
+ * Sets up the container
+ * 
+ * @param args the process to run 
+ */
 char** set_up(void* args){
     char** input = (char**)args;
     set_env();
@@ -61,16 +91,37 @@ char** set_up(void* args){
     return input;
 }
 
-void clean_up(void){
+/**
+ * Prepares to shutdown the container
+ */
+void clean_up(){
     umount("/proc");
 }
 
+/**
+ * Calling the exec family of functions, replaces the 
+ * current process image with a new process image.
+ * 
+ * To continue execution (for clean-up), we need to have the container
+ * spawn a child and run the shell inside there.
+ * 
+ * @param args [container root path, shell]
+ */
 int decouple(void* args){
     char** run = set_up(args);
     execvp(*run, run);
     return EXIT_SUCCESS;
 }
 
+/**
+ * Calling the exec family of functions, replaces the 
+ * current process image with a new process image.
+ * 
+ * To continue execution (for clean-up), we need to have the container
+ * spawn a child and run the shell inside there.
+ * 
+ * @param args [container root path, shell]
+ */
 int container(void* args){
     construct_cgroup();
     clone(decouple, build_stack(SIZE), SIGCHLD, args);
@@ -80,8 +131,7 @@ int container(void* args){
 }
 
 int main(int argc, char *argv[]){
-    int flags = CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWIPC | CLONE_NEWNET;
-    clone(container, build_stack(SIZE), flags | SIGCHLD, ++argv);
+    clone(container, build_stack(SIZE), FLAGS | SIGCHLD, ++argv);
     wait(nullptr);
     return EXIT_SUCCESS;
 }
